@@ -40,7 +40,7 @@ from verl.trainer.ppo import core_algos
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 
 import re
-# from search_r1.llm_agent.generation_new_old import LLMGenerationManager, GenerationConfig
+
 from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
 WorkerType = Type[Worker]
 def _norm_lang(s: str) -> str:
@@ -49,22 +49,7 @@ def _norm_lang(s: str) -> str:
         return 'zh'
     return s.split('-')[0]
 
-# === 新增：与 GenerationConfig.language_to_high_resource 对齐的映射 ===
-# _LANGUAGE_TO_HIGH_RESOURCE = {
-#     'fr': 'it',
-#     'es': 'fr',
-#     'pt': 'fr',
-#     'it': 'fr',
-#     'de': 'fr',
-#     'en': 'fr',
-#     'ru': 'fr',
-#     'zh': 'ja',
-#     'ja': 'zh',
-#     'ko': 'ja',
-#     'th': 'ja',
-#     'fi': 'ru',
-#     'ar': 'fr',
-# }
+
 _LANGUAGE_TO_HIGH_RESOURCE = {
     'fr': 'th',
     'es': 'fr',
@@ -404,78 +389,15 @@ class RayPPOTrainer(object):
 
         self._create_dataloader()
         self._init_logger()
-    # def _build_grpo_search_languages(self, batch: DataProto) -> list[str]:
-    #     """
-    #     为 GRPO 构造 question_languages：
-    #     对同一个样本（同一个 index），按照出现顺序：
-    #       第一次：使用原语言（问题语言）
-    #       第二次：使用英语 'en'
-    #       第三次：使用原语言对应的高资源语言 A
-    #     之后如果还有重复，就退回原语言。
-
-    #     注意：
-    #     - 只影响传给 generation.run_llm_loop 的 question_languages
-    #     - 不改 batch.non_tensor_batch['language'] 本身
-    #     """
-    #     # 原始 language 列表（已经经过 DataProto.repeat）
-    #     raw_langs = batch.non_tensor_batch.get('language', ['en'] * len(batch))
-    #     # 用于分组的样本 id，这里用 dataset 的 index（和 GRPO 里的 uid 一致）
-    #     indices = batch.non_tensor_batch.get('index', np.arange(len(raw_langs)))
-
-    #     # 每个样本的采样次数计数
-    #     counter = {}  # uid -> count_seen
-    #     question_languages: list[str] = []
-
-    #     # n_agent 控制每个样本有多少“search 策略分身”
-    #     n_agent = getattr(self.config.actor_rollout_ref.rollout, 'n_agent', 1)
-
-    #     for lang_raw, idx in zip(raw_langs, indices):
-    #         base_lang = lang_raw if isinstance(lang_raw, str) else 'en'
-    #         uid = idx  # numpy scalar / int 都可以作为 dict key
-
-    #         seen = counter.get(uid, 0)
-
-    #         # 默认：先用原语言
-    #         search_lang = base_lang
-
-    #         if n_agent >= 3:
-    #             # GRPO 典型配置：n_agent = G = 3
-    #             if seen == 0:
-    #                 # 第 1 个采样：使用问题语言
-    #                 search_lang = base_lang
-    #             elif seen == 1:
-    #                 # 第 2 个采样：强制用英语
-    #                 search_lang = 'en'
-    #             elif seen == 2:
-    #                 # 第 3 个采样：用高资源语言 A
-    #                 base_norm = _norm_lang(base_lang)
-    #                 search_lang = _LANGUAGE_TO_HIGH_RESOURCE.get(base_norm, 'en')
-    #             else:
-    #                 # 多余的采样（例如 rollout.n > 1 再重复）就退回原语言
-    #                 search_lang = base_lang
-    #         else:
-    #             # n_agent < 3 时，就保持原语言不变（更安全）
-    #             search_lang = base_lang
-
-    #         counter[uid] = seen + 1
-    #         # 保证都是 str
-    #         question_languages.append(str(search_lang))
-
-    #     return question_languages
+    
     def _build_grpo_search_languages(self, batch: DataProto) -> tuple[list[str], list[int]]:
-        """
-        为 GRPO 构造 question_languages，同时返回采样策略标记
         
-        Returns:
-            question_languages: 每个样本使用的搜索语言
-            sampling_strategies: 每个样本的采样策略 (0=本语言, 1=英语, 2=高资源语言)
-        """
         raw_langs = batch.non_tensor_batch.get('language', ['en'] * len(batch))
         indices = batch.non_tensor_batch.get('index', np.arange(len(raw_langs)))
 
         counter = {}
         question_languages: list[str] = []
-        sampling_strategies: list[int] = []  # ← 新增：记录采样策略
+        sampling_strategies: list[int] = []
         
         n_agent = getattr(self.config.actor_rollout_ref.rollout, 'n_agent', 1)
 
@@ -485,22 +407,22 @@ class RayPPOTrainer(object):
 
             seen = counter.get(uid, 0)
             search_lang = base_lang
-            strategy = 0  # 默认为本语言
+            strategy = 0  
 
             if n_agent >= 3:
                 if seen == 0:
-                    # 第 1 个采样：使用问题语言
+                    
                     search_lang = base_lang
-                    strategy = 0  # 本语言
+                    strategy = 0  
                 elif seen == 1:
-                    # 第 2 个采样：强制用英语
+                    
                     search_lang = 'en'
-                    strategy = 1  # 英语
+                    strategy = 1  
                 elif seen == 2:
-                    # 第 3 个采样：用高资源语言 A
+                    
                     base_norm = _norm_lang(base_lang)
                     search_lang = _LANGUAGE_TO_HIGH_RESOURCE.get(base_norm, 'en')
-                    strategy = 2  # 高资源语言
+                    strategy = 2 
                 else:
                     search_lang = base_lang
                     strategy = 0
@@ -586,268 +508,20 @@ class RayPPOTrainer(object):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
 
-    # def _validate(self):
-    #     """
-    #     The training loop of PPO with global metric computation.
-    #     Accumulates metrics across all batches before computing final statistics.
-    #     """
-    #     import torch
-    #     reward_tensor_lst = []
-    #     data_source_lst = []
-
-    #     gen_config = GenerationConfig(
-    #         max_turns=self.config.max_turns,
-    #         max_start_length=self.config.data.max_start_length,
-    #         max_prompt_length=self.config.data.max_prompt_length,
-    #         max_response_length=self.config.data.max_response_length,
-    #         max_obs_length=self.config.data.max_obs_length,
-    #         num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
-    #         no_think_rl=self.config.algorithm.no_think_rl,
-    #         search_url = self.config.retriever.url,
-    #         topk = self.config.retriever.topk,
-    #     )
-
-    #     # Agent config preparation
-    #     generation_manager = LLMGenerationManager(
-    #         tokenizer=self.tokenizer,
-    #         actor_rollout_wg=self.actor_rollout_wg,
-    #         config=gen_config,
-    #         is_validation = True,
-    #     )
-
-    #     if not self.config.do_search:
-    #         for test_data in self.val_dataloader:
-    #             test_batch = DataProto.from_single_dict(test_data)
-
-    #             # we only do validation on rule-based rm
-    #             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
-    #                 return {}
-
-    #             test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-    #             test_gen_batch.meta_info = {
-    #                 'eos_token_id': self.tokenizer.eos_token_id,
-    #                 'pad_token_id': self.tokenizer.pad_token_id,
-    #                 'recompute_log_prob': False,
-    #                 'do_sample': False,
-    #                 'validate': True,
-    #             }
-
-    #             # pad to be divisible by dp_size
-    #             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-    #             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-    #             # unpad
-    #             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-    #             print('validation generation end')
-
-    #             test_batch = test_batch.union(test_output_gen_batch)
-
-    #             # evaluate using reward_function
-    #             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-    #             reward_tensor = self.val_reward_fn(test_batch)
-
-    #             reward_tensor_lst.append(reward_tensor)
-    #             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
-    #     else:
-    #         for batch_dict in self.val_dataloader:
-    #             timing_raw = {}
-    #             test_batch: DataProto = DataProto.from_single_dict(batch_dict)
-    #             # test_batch = test_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_agent, interleave=True)
-                
-    #             test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-    #             test_gen_batch.meta_info = {
-    #                 'eos_token_id': self.tokenizer.eos_token_id,
-    #                 'pad_token_id': self.tokenizer.pad_token_id,
-    #                 'recompute_log_prob': False,
-    #                 'do_sample': False,
-    #                 'validate': True,
-    #             }
-    #             with _timer('step', timing_raw):
-    #                 first_input_ids = test_gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone()
-    #                 with _timer('gen', timing_raw):
-    #                     generation_manager.timing_raw = timing_raw
-    #                     final_gen_batch_output = generation_manager.run_llm_loop(
-    #                         gen_batch=test_gen_batch,
-    #                         initial_input_ids=first_input_ids,
-    #                     )
-                    
-    #                 test_batch = test_batch.union(final_gen_batch_output)
-                    
-    #                 for key in test_batch.batch.keys():
-    #                     test_batch.batch[key] = test_batch.batch[key].long()
-                    
-    #                 # evaluate using reward_function
-    #                 # for certain reward function (e.g. sandbox), the generation can overlap with reward
-    #                 reward_tensor = self.val_reward_fn(test_batch)
-
-    #                 reward_tensor_lst.append(reward_tensor)
-    #                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
-
-    #     reward_tensor = torch.cat([rw.sum(-1) for rw in reward_tensor_lst], dim=0).cpu()  # (batch_size,)
-    #     # reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-    #     data_sources = np.concatenate(data_source_lst, axis=0)
-    #     # evaluate test_score based on data source
-    #     data_source_reward = {}
-    #     for i in range(reward_tensor.shape[0]):
-    #         data_source = data_sources[i]
-    #         if data_source not in data_source_reward:
-    #             data_source_reward[data_source] = []
-    #         data_source_reward[data_source].append(reward_tensor[i].item())
-
-    #     metric_dict = {}
-    #     for data_source, rewards in data_source_reward.items():
-    #         metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
-
-    #     return metric_dict
-
-    # def _validate(self):
-    #     """ 
-    #     第一次尝试
-    #     The training loop of PPO with global metric computation.
-    #     Accumulates metrics across all batches before computing final statistics.
-    #     支持多指标评估：em, fem, c3recall
-    #     """
-    #     import torch
-    #     from verl.utils.reward_score import qa_em
-    #     # 导入RewardManager类
-    #     # 在 ray_trainer.py 文件中
-    #     from verl.trainer.main_ppo import RewardManager
-    #     # 存储多个指标的结果
-    #     metric_results = {
-    #         'em': [],
-    #         'fem': [], 
-    #         'c3recall': []
-    #     }
-    #     data_source_lst = []
-        
-    #     gen_config = GenerationConfig(
-    #         max_turns=self.config.max_turns,
-    #         max_start_length=self.config.data.max_start_length,
-    #         max_prompt_length=self.config.data.max_prompt_length,
-    #         max_response_length=self.config.data.max_response_length,
-    #         max_obs_length=self.config.data.max_obs_length,
-    #         num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
-    #         no_think_rl=self.config.algorithm.no_think_rl,
-    #         search_url = self.config.retriever.url,
-    #         topk = self.config.retriever.topk,
-    #     )
-        
-    #     # Agent config preparation
-    #     generation_manager = LLMGenerationManager(
-    #         tokenizer=self.tokenizer,
-    #         actor_rollout_wg=self.actor_rollout_wg,
-    #         config=gen_config,
-    #         is_validation = True,
-    #     )
-        
-    #     # 创建多指标评估的reward manager
-    #     multi_metric_reward_fn = RewardManager(
-    #         tokenizer=self.tokenizer, 
-    #         num_examine=1, 
-    #         eval_metrics={'em': True, 'fem': True, 'c3recall': True}
-    #     )
-        
-    #     if not self.config.do_search:
-    #         for test_data in self.val_dataloader:
-    #             test_batch = DataProto.from_single_dict(test_data)
-    #             # we only do validation on rule-based rm
-    #             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
-    #                 return {}
-    #             test_gen_batch = test_batch.pop(['input_ids', 'attention_mask', 'position_ids'])
-    #             test_gen_batch.meta_info = {
-    #                 'eos_token_id': self.tokenizer.eos_token_id,
-    #                 'pad_token_id': self.tokenizer.pad_token_id,
-    #                 'recompute_log_prob': False,
-    #                 'do_sample': False,
-    #                 'validate': True,
-    #             }
-    #             # pad to be divisible by dp_size
-    #             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-    #             test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-    #             # unpad
-    #             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
-    #             print('validation generation end')
-    #             test_batch = test_batch.union(test_output_gen_batch)
-                
-    #             # 计算多个指标
-    #             reward_results = multi_metric_reward_fn(test_batch)
-    #             for metric_name, reward_tensor in reward_results.items():
-    #                 metric_results[metric_name].append(reward_tensor)
-    #             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_results['em'].shape[0]))
-    #     else:
-    #         for batch_dict in self.val_dataloader:
-    #             timing_raw = {}
-    #             test_batch: DataProto = DataProto.from_single_dict(batch_dict)
-    #             test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-    #             test_gen_batch.meta_info = {
-    #                 'eos_token_id': self.tokenizer.eos_token_id,
-    #                 'pad_token_id': self.tokenizer.pad_token_id,
-    #                 'recompute_log_prob': False,
-    #                 'do_sample': False,
-    #                 'validate': True,
-    #             }
-                
-    #             with _timer('step', timing_raw):
-    #                 first_input_ids = test_gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone()
-    #                 with _timer('gen', timing_raw):
-    #                     generation_manager.timing_raw = timing_raw
-    #                     final_gen_batch_output = generation_manager.run_llm_loop(
-    #                         gen_batch=test_gen_batch,
-    #                         initial_input_ids=first_input_ids,
-    #                     )
-    #                 test_batch = test_batch.union(final_gen_batch_output)
-    #                 for key in test_batch.batch.keys():
-    #                     test_batch.batch[key] = test_batch.batch[key].long()
-                    
-    #                 # 计算多个指标
-    #                 reward_results = multi_metric_reward_fn(test_batch)
-    #                 for metric_name, reward_tensor in reward_results.items():
-    #                     metric_results[metric_name].append(reward_tensor)
-    #                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_results['em'].shape[0]))
-        
-    #     # 处理多个指标的结果
-    #     final_metric_dict = {}
-    #     data_sources = np.concatenate(data_source_lst, axis=0)  # (total_batch_size,)
-        
-    #     for metric_name in ['em', 'fem', 'c3recall']:
-    #         # 将所有batch的结果拼接
-    #         metric_tensor = torch.cat([rw.sum(-1) for rw in metric_results[metric_name]], dim=0).cpu()  # (total_batch_size,)
-            
-    #         # 按data_source分组计算平均值
-    #         data_source_reward = {}
-    #         for i in range(metric_tensor.shape[0]):
-    #             data_source = data_sources[i]
-    #             if data_source not in data_source_reward:
-    #                 data_source_reward[data_source] = []
-    #             data_source_reward[data_source].append(metric_tensor[i].item())
-            
-    #         # 为每个指标创建相应的评估结果
-    #         for data_source, rewards in data_source_reward.items():
-    #             if metric_name == 'em':
-    #                 # 保持原有的命名规范，用于向后兼容
-    #                 final_metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
-    #             else:
-    #                 # 新指标使用新的命名规范
-    #                 final_metric_dict[f'val/{metric_name}_score/{data_source}'] = np.mean(rewards)
-
-    #     print(f"Final metrics to be logged: {final_metric_dict}")
-
-    #     return final_metric_dict
 
     def _validate(self):
         """ 
         The training loop of PPO with global metric computation.
         Accumulates metrics across all batches before computing final statistics.
-        支持多指标评估：em, fem, c3recall
+
         """
         import torch
         import gc
         from verl.utils.reward_score import qa_em
-        # 导入RewardManager类
-        # 在 ray_trainer.py 文件中
-        # from verl.trainer.main_ppo import RewardManager
-        from verl.trainer.main_ppo_parallel import RewardManager
+
+        from verl.trainer.main_ppo import RewardManager
         lang_lst = []
-        # 存储多个指标的结果 - 使用列表而不是张量来减少显存占用
+
         metric_results = {
             'em': [],
             'fem': [], 
@@ -875,7 +549,7 @@ class RayPPOTrainer(object):
             is_validation = True,
         )
         
-        # 创建多指标评估的reward manager
+
         multi_metric_reward_fn = RewardManager(
             tokenizer=self.tokenizer, 
             num_examine=1, 
@@ -885,7 +559,7 @@ class RayPPOTrainer(object):
         try:
             if not self.config.do_search:
                 for test_data in self.val_dataloader:
-                    with torch.no_grad():  # 确保验证过程不计算梯度
+                    with torch.no_grad():  
                         test_batch = DataProto.from_single_dict(test_data)
                         # we only do validation on rule-based rm
                         if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
@@ -906,22 +580,22 @@ class RayPPOTrainer(object):
                         print('validation generation end')
                         test_batch = test_batch.union(test_output_gen_batch)
                         
-                        # 计算多个指标
+                        
                         reward_results = multi_metric_reward_fn(test_batch)
                         for metric_name, reward_tensor in reward_results.items():
-                            # 立即转换为CPU并存储数值，而不是保留张量
+                           
                             metric_results[metric_name].append(reward_tensor.sum(-1).cpu().numpy())
                         data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_results['em'].shape[0]))
                         langs = test_batch.non_tensor_batch.get('language', ['unk'] * reward_results['em'].shape[0])
-                        # 统一转成 str，并做规范化（避免 zh_cn / pt-BR 混乱）
+                        
                         langs = [_norm_lang_for_log(str(x)) for x in langs]
                         lang_lst.append(np.array(langs, dtype=object))
-                        # 清理中间变量
+                        
                         del test_batch, test_gen_batch, test_output_gen_batch, reward_results
-                        torch.cuda.empty_cache()  # 清理CUDA缓存
+                        torch.cuda.empty_cache()  
             else:
                 for batch_dict in self.val_dataloader:
-                    with torch.no_grad():  # 确保验证过程不计算梯度
+                    with torch.no_grad():  
                         timing_raw = {}
                         test_batch: DataProto = DataProto.from_single_dict(batch_dict)
                         test_gen_batch = test_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -949,29 +623,29 @@ class RayPPOTrainer(object):
                             for key in test_batch.batch.keys():
                                 test_batch.batch[key] = test_batch.batch[key].long()
                             
-                            # 计算多个指标
+                            
                             reward_results = multi_metric_reward_fn(test_batch)
                             for metric_name, reward_tensor in reward_results.items():
-                                # 立即转换为CPU并存储数值，而不是保留张量
+                                
                                 metric_results[metric_name].append(reward_tensor.sum(-1).cpu().numpy())
                             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_results['em'].shape[0]))
                             langs = test_batch.non_tensor_batch.get('language', ['unk'] * reward_results['em'].shape[0])
-                            # 统一转成 str，并做规范化（避免 zh_cn / pt-BR 混乱）
+                            
                             langs = [_norm_lang_for_log(str(x)) for x in langs]
                             lang_lst.append(np.array(langs, dtype=object))
-                            # 清理中间变量
+                            
                             del test_batch, test_gen_batch, final_gen_batch_output, reward_results
-                            torch.cuda.empty_cache()  # 清理CUDA缓存
+                            torch.cuda.empty_cache()  
             
-            # 处理多个指标的结果
+            
             final_metric_dict = {}
             data_sources = np.concatenate(data_source_lst, axis=0)  # (total_batch_size,)
             languages_all = np.concatenate(lang_lst, axis=0)
             for metric_name in ['em', 'fem', 'c3recall']:
-                # 将所有batch的结果拼接 - 现在是numpy数组
+                
                 metric_values = np.concatenate(metric_results[metric_name], axis=0)  # (total_batch_size,)
                 
-                # 按data_source分组计算平均值
+                
                 data_source_reward = {}
                 for i in range(metric_values.shape[0]):
                     data_source = data_sources[i]
@@ -979,15 +653,15 @@ class RayPPOTrainer(object):
                         data_source_reward[data_source] = []
                     data_source_reward[data_source].append(metric_values[i])
                 
-                # 为每个指标创建相应的评估结果
+                
                 for data_source, rewards in data_source_reward.items():
                     if metric_name == 'em':
-                        # 保持原有的命名规范，用于向后兼容
+                        
                         final_metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
                     else:
-                        # 新指标使用新的命名规范
+                        
                         final_metric_dict[f'val/{metric_name}_score/{data_source}'] = np.mean(rewards)
-                # === 新增：按 language 聚合 ===
+                
                 from collections import defaultdict
                 lang_reward = defaultdict(list)
                 for val, lg in zip(metric_values, languages_all):
@@ -1007,7 +681,7 @@ class RayPPOTrainer(object):
             return final_metric_dict
         
         finally:
-            # 确保清理资源
+            
             del generation_manager, multi_metric_reward_fn
             torch.cuda.empty_cache()
             gc.collect()
@@ -1059,7 +733,7 @@ class RayPPOTrainer(object):
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
         # you should not use `create_colocated_worker_cls`. Instead, directly pass different resource pool to different worker groups.
-        # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
+        
         all_wg = {}
         self.wg_dicts = []
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
@@ -1067,7 +741,7 @@ class RayPPOTrainer(object):
             wg_dict = self.ray_worker_group_cls(resource_pool=resource_pool, ray_cls_with_init=worker_dict_cls)
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
             all_wg.update(spawn_wg)
-            # keep the referece of WorkerDict to support ray >= 2.31. Ref: https://github.com/ray-project/ray/pull/45699
+            
             self.wg_dicts.append(wg_dict)
 
         if self.use_critic:
@@ -1193,24 +867,20 @@ class RayPPOTrainer(object):
                         with _timer('gen', timing_raw):
                             generation_manager.timing_raw = timing_raw
 
-                            # === 修改开始：根据算法类型构造 question_languages ===
+                            
                             if self.config.algorithm.adv_estimator == 'grpo':
-                                # GRPO：为同一样本的多采样设置不同的搜索语言策略
-                                # 1）先按样本 index+出现顺序，重写 non_tensor_batch['content']
-                            #    第 1 次：content；第 2 次：content_en；第 3 次：content_source
-                        
-                                # question_languages = self._build_grpo_search_languages(batch)
+                                
                                 question_languages, sampling_strategies = self._build_grpo_search_languages(batch)
     
-                                # ← 新增：将采样策略存入 batch，这样即使被打乱也能识别
+                                
                                 batch.non_tensor_batch['sampling_strategy'] = np.array(sampling_strategies, dtype=object)
 
                             else:
-                                # PPO 等其它：保持原行为 —— 每个样本使用它自己的 language 字段
+                                
                                 question_languages = []
                                 for item in batch.non_tensor_batch.get('language', ['en'] * len(batch)):
                                     question_languages.append(item if isinstance(item, str) else 'en')
-                            # === 修改结束 ===
+
 
                             final_gen_batch_output = generation_manager.run_llm_loop(
                                 gen_batch=gen_batch,
@@ -1228,7 +898,7 @@ class RayPPOTrainer(object):
 
                         # batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                         #                                         dtype=object)
-                        # # 验证uid分组是否正确
+                        
                         # print(f"[DEBUG] Checking UID grouping:")
                         # print(f"  Batch size after repeat: {len(batch)}")
                         # print(f"  Expected n_agent: {self.config.actor_rollout_ref.rollout.n_agent}")

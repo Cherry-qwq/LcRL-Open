@@ -39,41 +39,52 @@ pip install uvicorn fastapi
 
 ## Quick start
 
-Train a reasoning + search LLM on NQ dataset with e5 as the retriever and wikipedia as the corpus.
+Train a reasoning + search LLM on MKQA dataset with multilingual-e5 as the retriever and wikipedia as the corpus.
 
-(1) Download and index the corpus.
-、、、
-bash search_r1/search/build_index.sh
-
-、、、
-
-(2) Process the multilingual dataset.
+(1) Download the corpus in https://huggingface.co/datasets/wikimedia/wikipedia, and index the corpus.
 ```bash
-python scripts/data_process/mkqa_search.py
+bash search_r1/search/m_build_index_parallel.sh
+```
+
+(2) Download your dataset, and then process the multilingual train and test dataset.
+```bash
+python scripts/data_process/mkqa_search_parallel.py
+```
+For each question-answer sample, it should be a dictionary containing the desired content as below:
+
+```
+data = {
+        "data_source": data_source,
+        "prompt": [{
+            "role": "user",
+            "content": question,
+        }],
+        "ability": "fact-reasoning",
+        "reward_model": {
+            "style": "rule",
+            "ground_truth": solution
+        },
+        "extra_info": {
+            'split': split,
+            'index': idx,
+        }
+    }
 ```
 
 (3) Launch a local retrieval server.
 ```bash
 conda activate retriever
-bash retrieval_launch.sh
+bash m_retrieval_launch_parallel.sh
+#The LLM can call the search engine by calling the search API (e.g., "http://127.0.0.1:8000/retrieve").
 ```
 
-(4) Run RL training (GRPO) with Qwen2.5/Qwen3.
+(4) Run RL training (GRPO) .
 ```bash
 conda activate searchr1
-bash train_ppo.sh
-```
-## Inference
-#### You can play with the trained Search-R1 model with your own question.
-(1) Launch a local retrieval server.
-```bash
-conda activate retriever
-bash retrieval_launch.sh
+bash m_train_grpo.sh
 ```
 
-(2) Run inference.
+(5) View results .
 ```bash
-conda activate searchr1
-python infer.py
+mlflow ui
 ```
-You can modify the ```question``` on line 7 to something you're interested in.
